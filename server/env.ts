@@ -1,29 +1,21 @@
-import 'dotenv/config';
-import crypto from 'node:crypto';
+import type { Kysely } from 'kysely';
+import type { Database } from './db/schema.ts';
 
-const isProduction = process.env.NODE_ENV === 'production';
-
-let jwtSecret = process.env.JWT_SECRET;
-if (!jwtSecret) {
-  if (isProduction) {
-    throw new Error('JWT_SECRET must be set in production.');
-  }
-  jwtSecret = crypto.randomBytes(32).toString('hex');
-  console.warn(
-    '[postflow] JWT_SECRET is not set — using a random secret. Sessions will reset when the server restarts.',
-  );
+/** Bindings configured in wrangler.jsonc, plus secrets set with `wrangler secret put`. */
+export interface Env {
+  DB: D1Database;
+  ASSETS: Fetcher;
+  AUTH_LIMITER?: RateLimit;
+  AI_LIMITER?: RateLimit;
+  ANTHROPIC_API_KEY?: string;
+  JWT_SECRET?: string;
+  ANTHROPIC_MODEL?: string;
 }
 
-if (!process.env.ANTHROPIC_API_KEY) {
-  console.warn(
-    '[postflow] ANTHROPIC_API_KEY is not set — AI generation endpoints will return an error until you add it to .env.',
-  );
-}
-
-export const env = {
-  isProduction,
-  port: Number(process.env.PORT ?? 3001),
-  jwtSecret,
-  databaseFile: process.env.DATABASE_FILE ?? './data/postflow.db',
-  anthropicModel: process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-5',
+export type AppEnv = {
+  Bindings: Env;
+  Variables: {
+    db: Kysely<Database>;
+    userId: string;
+  };
 };

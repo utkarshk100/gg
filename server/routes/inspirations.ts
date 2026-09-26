@@ -1,8 +1,11 @@
-import { Router } from 'express';
+import { Hono } from 'hono';
+import type { Kysely } from 'kysely';
 import { z } from 'zod';
-import { db, newId, nowIso } from '../db/index.ts';
-import { requireAuth, uid } from '../auth.ts';
-import { asyncHandler, HttpError, parseBody } from '../lib/http.ts';
+import { newId, nowIso, runBatch } from '../db/index.ts';
+import type { Database } from '../db/schema.ts';
+import type { AppEnv } from '../env.ts';
+import { requireAuth } from '../auth.ts';
+import { HttpError, parseBody } from '../lib/http.ts';
 
 export const MAX_INSPIRATIONS = 3;
 export const MAX_SAMPLES_PER_INSPIRATION = 3;
@@ -18,10 +21,10 @@ const inspirationBody = z.object({
     .transform((s) => s.filter(Boolean)),
 });
 
-export const inspirationsRouter = Router();
+export const inspirationsRouter = new Hono<AppEnv>();
 inspirationsRouter.use(requireAuth);
 
-export async function listInspirations(userId: string) {
+export async function listInspirations(db: Kysely<Database>, userId: string) {
   const inspirations = await db
     .selectFrom('inspirations')
     .select(['id', 'name', 'created_at'])
@@ -44,7 +47,7 @@ export async function listInspirations(userId: string) {
   }));
 }
 
-async function assertOwned(userId: string, inspirationId: string) {
+async function assertOwned(db: Kysely<Database>, userId: string, inspirationId: string) {
   const row = await db
     .selectFrom('inspirations')
     .select('id')
@@ -54,127 +57,108 @@ async function assertOwned(userId: string, inspirationId: string) {
   if (!row) throw new HttpError(404, 'Inspiration not found');
 }
 
-const findInspiration = async (userId: string, id: string) =>
-  (await listInspirations(userId)).find((i) => i.id === id);
+const findInspiration = async (db: Kysely<Database>, userId: string, id: string) =>
+  (await listInspirations(db, userId)).find((i) => i.id === id);
 
-inspirationsRouter.get(
-  '/',
-  asyncHandler(async (req, res) => {
-    res.json({ inspirations: await listInspirations(uid(req)) });
-  }),
-);
+const insertSamples = (db: Kysely<Database>, inspirationId: string, samples: string[]) =>
+  db
+    .insertInto('inspiration_samples')
+    .values(samples.map((sample_text) => ({ id: newId(), inspiration_id: inspirationId, sample_text })));
 
-inspirationsRouter.post(
-  '/',
-  asyncHandler(async (req, res) => {
-    const userId = uid(req);
-    const body = parseBody(inspirationBody, req.body);
-    const id = newId();
+inspirationsRouter.get('/', async (c) => {
+  return c.json({ inspirations: await listInspirations(c.get('db'), c.get('userId')) });
+});
 
-    await db.transaction().execute(async (trx) => {
-      const { count } = await trx
-        .selectFrom('inspirations')
-        .select((eb) => eb.fn.countAll<number>().as('count'))
-        .where('user_id', '=', userId)
-        .executeTakeFirstOrThrow();
-      if (Number(count) >= MAX_INSPIRATIONS) {
-        throw new HttpError(400, `You can save up to ${MAX_INSPIRATIONS} inspirations`);
-      }
-      await trx.insertInto('inspirations').values({ id, user_id: userId, name: body.name, created_at: nowIso() }).execute();
-      if (body.samples.length) {
-        await trx
-          .insertInto('inspiration_samples')
-          .values(body.samples.map((sample_text) => ({ id: newId(), inspiration_id: id, sample_text })))
-          .execute();
-      }
-    });
+inspirationsRouter.post('/', async (c) => {
+  const db = c.get('db');
+  const userId = c.get('userId');
+  const body = await parseBody(c, inspirationBody);
 
-    res.status(201).json({ inspiration: await findInspiration(userId, id) });
-  }),
-);
+  const { count } = await db
+    .selectFrom('inspirations')
+    .select((eb) => eb.fn.countAll<number>().as('count'))
+    .where('user_id', '=', userId)
+    .executeTakeFirstOrThrow();
+  if (Number(count) >= MAX_INSPIRATIONS) {
+    throw new HttpError(400, `You can save up to ${MAX_INSPIRATIONS} inspirations`);
+  }
+
+  const id = newId();
+  await runBatch(c.env.DB, [
+    db.insertInto('inspirations').values({ id, user_id: userId, name: body.name, created_at: nowIso() }),
+    ...(body.samples.length ? [insertSamples(db, id, body.samples)] : []),
+  ]);
+
+  return c.json({ inspiration: await findInspiration(db, userId, id) }, 201);
+});
 
 // Replaces the name and full sample list — used by the editable cards.
-inspirationsRouter.put(
-  '/:id',
-  asyncHandler(async (req, res) => {
-    const userId = uid(req);
-    const id = req.params.id;
-    await assertOwned(userId, id);
-    const body = parseBody(inspirationBody, req.body);
+inspirationsRouter.put('/:id', async (c) => {
+  const db = c.get('db');
+  const userId = c.get('userId');
+  const id = c.req.param('id');
+  await assertOwned(db, userId, id);
+  const body = await parseBody(c, inspirationBody);
 
-    await db.transaction().execute(async (trx) => {
-      await trx.updateTable('inspirations').set({ name: body.name }).where('id', '=', id).execute();
-      await trx.deleteFrom('inspiration_samples').where('inspiration_id', '=', id).execute();
-      if (body.samples.length) {
-        await trx
-          .insertInto('inspiration_samples')
-          .values(body.samples.map((sample_text) => ({ id: newId(), inspiration_id: id, sample_text })))
-          .execute();
-      }
-    });
+  await runBatch(c.env.DB, [
+    db.updateTable('inspirations').set({ name: body.name }).where('id', '=', id),
+    db.deleteFrom('inspiration_samples').where('inspiration_id', '=', id),
+    ...(body.samples.length ? [insertSamples(db, id, body.samples)] : []),
+  ]);
 
-    res.json({ inspiration: await findInspiration(userId, id) });
-  }),
-);
+  return c.json({ inspiration: await findInspiration(db, userId, id) });
+});
 
-inspirationsRouter.delete(
-  '/:id',
-  asyncHandler(async (req, res) => {
-    const userId = uid(req);
-    await assertOwned(userId, req.params.id);
-    await db.transaction().execute(async (trx) => {
-      await trx.deleteFrom('inspiration_samples').where('inspiration_id', '=', req.params.id).execute();
-      await trx.deleteFrom('inspirations').where('id', '=', req.params.id).execute();
-    });
-    res.json({ ok: true });
-  }),
-);
+inspirationsRouter.delete('/:id', async (c) => {
+  const db = c.get('db');
+  const id = c.req.param('id');
+  await assertOwned(db, c.get('userId'), id);
+  await runBatch(c.env.DB, [
+    db.deleteFrom('inspiration_samples').where('inspiration_id', '=', id),
+    db.deleteFrom('inspirations').where('id', '=', id),
+  ]);
+  return c.json({ ok: true });
+});
 
-inspirationsRouter.get(
-  '/:id/samples',
-  asyncHandler(async (req, res) => {
-    const userId = uid(req);
-    await assertOwned(userId, req.params.id);
-    const samples = await db
-      .selectFrom('inspiration_samples')
-      .select(['id', 'sample_text'])
-      .where('inspiration_id', '=', req.params.id)
-      .execute();
-    res.json({ samples });
-  }),
-);
+inspirationsRouter.get('/:id/samples', async (c) => {
+  const db = c.get('db');
+  const id = c.req.param('id');
+  await assertOwned(db, c.get('userId'), id);
+  const samples = await db
+    .selectFrom('inspiration_samples')
+    .select(['id', 'sample_text'])
+    .where('inspiration_id', '=', id)
+    .execute();
+  return c.json({ samples });
+});
 
-inspirationsRouter.post(
-  '/:id/samples',
-  asyncHandler(async (req, res) => {
-    const userId = uid(req);
-    const inspirationId = req.params.id;
-    await assertOwned(userId, inspirationId);
-    const { sample_text } = parseBody(z.object({ sample_text: sampleText }), req.body);
-    const { count } = await db
-      .selectFrom('inspiration_samples')
-      .select((eb) => eb.fn.countAll<number>().as('count'))
-      .where('inspiration_id', '=', inspirationId)
-      .executeTakeFirstOrThrow();
-    if (Number(count) >= MAX_SAMPLES_PER_INSPIRATION) {
-      throw new HttpError(400, `Up to ${MAX_SAMPLES_PER_INSPIRATION} sample posts per creator`);
-    }
-    const sample = { id: newId(), inspiration_id: inspirationId, sample_text };
-    await db.insertInto('inspiration_samples').values(sample).execute();
-    res.status(201).json({ sample: { id: sample.id, sample_text } });
-  }),
-);
+inspirationsRouter.post('/:id/samples', async (c) => {
+  const db = c.get('db');
+  const inspirationId = c.req.param('id');
+  await assertOwned(db, c.get('userId'), inspirationId);
+  const { sample_text } = await parseBody(c, z.object({ sample_text: sampleText }));
+  const { count } = await db
+    .selectFrom('inspiration_samples')
+    .select((eb) => eb.fn.countAll<number>().as('count'))
+    .where('inspiration_id', '=', inspirationId)
+    .executeTakeFirstOrThrow();
+  if (Number(count) >= MAX_SAMPLES_PER_INSPIRATION) {
+    throw new HttpError(400, `Up to ${MAX_SAMPLES_PER_INSPIRATION} sample posts per creator`);
+  }
+  const sample = { id: newId(), inspiration_id: inspirationId, sample_text };
+  await db.insertInto('inspiration_samples').values(sample).execute();
+  return c.json({ sample: { id: sample.id, sample_text } }, 201);
+});
 
-inspirationsRouter.delete(
-  '/:id/samples/:sampleId',
-  asyncHandler(async (req, res) => {
-    await assertOwned(uid(req), req.params.id);
-    const result = await db
-      .deleteFrom('inspiration_samples')
-      .where('id', '=', req.params.sampleId)
-      .where('inspiration_id', '=', req.params.id)
-      .executeTakeFirst();
-    if (!result.numDeletedRows) throw new HttpError(404, 'Sample not found');
-    res.json({ ok: true });
-  }),
-);
+inspirationsRouter.delete('/:id/samples/:sampleId', async (c) => {
+  const db = c.get('db');
+  const id = c.req.param('id');
+  await assertOwned(db, c.get('userId'), id);
+  const result = await db
+    .deleteFrom('inspiration_samples')
+    .where('id', '=', c.req.param('sampleId'))
+    .where('inspiration_id', '=', id)
+    .executeTakeFirst();
+  if (!result.numDeletedRows) throw new HttpError(404, 'Sample not found');
+  return c.json({ ok: true });
+});

@@ -1,10 +1,6 @@
-import path from 'node:path';
-import fs from 'node:fs';
-import express, { type NextFunction, type Request, type Response } from 'express';
-import cookieParser from 'cookie-parser';
-import rateLimit from 'express-rate-limit';
-import { env } from './env.ts';
-import { migrateToLatest } from './db/index.ts';
+import { Hono } from 'hono';
+import { createDb } from './db/index.ts';
+import type { AppEnv } from './env.ts';
 import { HttpError } from './lib/http.ts';
 import { authRouter } from './routes/auth.ts';
 import { profileRouter } from './routes/profile.ts';
@@ -13,59 +9,30 @@ import { inspirationsRouter } from './routes/inspirations.ts';
 import { generateRouter } from './routes/generate.ts';
 import { draftsRouter } from './routes/drafts.ts';
 
-const app = express();
-app.disable('x-powered-by');
-// Hosts like Render and Railway put one proxy in front of the app. Trusting it
-// lets rate limits and secure cookies see the visitor's real IP and HTTPS.
-if (env.isProduction) app.set('trust proxy', 1);
-app.use(express.json({ limit: '200kb' }));
-app.use(cookieParser());
+// Handles /api/* only. Everything else is served from the static React build
+// (see "assets" in wrangler.jsonc).
+const app = new Hono<AppEnv>().basePath('/api');
 
-const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: 'draft-8', legacyHeaders: false });
-const aiLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  limit: 10,
-  standardHeaders: 'draft-8',
-  legacyHeaders: false,
-  message: { error: 'You are generating very quickly — take a breath and try again in a minute.' },
+app.use(async (c, next) => {
+  c.set('db', createDb(c.env.DB));
+  await next();
 });
 
-app.get('/api/health', (_req, res) => {
-  res.json({ ok: true });
-});
-app.use('/api/auth', authLimiter, authRouter);
-app.use('/api/profile', profileRouter);
-app.use('/api/voice-samples', voiceSamplesRouter);
-app.use('/api/voice-profile/analyze', aiLimiter);
-app.use('/api/voice-profile', voiceProfileRouter);
-app.use('/api/inspirations', inspirationsRouter);
-app.use('/api/generate', aiLimiter, generateRouter);
-app.use('/api/drafts', draftsRouter);
-app.use('/api', (_req, res) => {
-  res.status(404).json({ error: 'Not found' });
-});
+app.get('/health', (c) => c.json({ ok: true }));
+app.route('/auth', authRouter);
+app.route('/profile', profileRouter);
+app.route('/voice-samples', voiceSamplesRouter);
+app.route('/voice-profile', voiceProfileRouter);
+app.route('/inspirations', inspirationsRouter);
+app.route('/generate', generateRouter);
+app.route('/drafts', draftsRouter);
 
-// In production, serve the built frontend from the same server.
-const distDir = path.resolve('dist');
-if (env.isProduction && fs.existsSync(distDir)) {
-  app.use(express.static(distDir));
-  app.get('*', (_req, res) => res.sendFile(path.join(distDir, 'index.html')));
-}
+app.notFound((c) => c.json({ error: 'Not found' }, 404));
 
-app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
-  if (err instanceof HttpError) {
-    res.status(err.status).json({ error: err.message });
-    return;
-  }
-  if (err instanceof SyntaxError && 'body' in err) {
-    res.status(400).json({ error: 'Malformed JSON body' });
-    return;
-  }
+app.onError((err, c) => {
+  if (err instanceof HttpError) return c.json({ error: err.message }, err.status);
   console.error(err);
-  res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  return c.json({ error: 'Something went wrong. Please try again.' }, 500);
 });
 
-await migrateToLatest();
-app.listen(env.port, () => {
-  console.log(`[postflow] API listening on http://localhost:${env.port}`);
-});
+export default app;

@@ -9,28 +9,27 @@ PostFlow never connects to your LinkedIn account and never posts anything. It on
 | Layer    | Tech |
 | -------- | ---- |
 | Frontend | React 19 + TypeScript + Tailwind CSS v4, bundled by Vite (`src/`) |
-| Backend  | Node.js + Express, run with `tsx` (`server/`) |
-| Database | SQLite (`better-sqlite3`) through the [Kysely](https://kysely.dev) query builder |
-| Auth     | Email/password (bcrypt), a JWT in an httpOnly session cookie |
-| AI       | Anthropic Claude API (`@anthropic-ai/sdk`), called only from the backend |
+| Backend  | [Hono](https://hono.dev) API running on **Cloudflare Workers** (`server/`) |
+| Database | **Cloudflare D1** (SQLite-based), queried with [Kysely](https://kysely.dev) |
+| Auth     | Email/password (PBKDF2 via Web Crypto), a signed JWT in an httpOnly session cookie |
+| AI       | Anthropic Claude API (`@anthropic-ai/sdk`), called only from the Worker |
+| Hosting  | One Cloudflare Worker serves both the React build and `/api/*` |
 
 ## Local setup
 
-**Requirements:** Node.js 20 or newer (22 LTS recommended) and npm.
+**Requirements:** Node.js 20 or newer (22 LTS recommended) and npm. You don't need a Cloudflare account to run locally.
 
 ```bash
 npm install
 ```
 
-### 1. Create your `.env` file
-
-Copy the example file and fill it in:
+### 1. Add your local secrets
 
 ```bash
-cp .env.example .env
+cp .dev.vars.example .dev.vars
 ```
 
-Then open `.env` in your editor and set:
+Open `.dev.vars` and set:
 
 ```dotenv
 ANTHROPIC_API_KEY=sk-ant-...your key...
@@ -43,17 +42,15 @@ To generate a `JWT_SECRET`, run:
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
-`.env` is gitignored. The key is read on the server only and is never sent to the browser.
+`.dev.vars` is gitignored. The key is only used by the Worker and is never sent to the browser.
 
-Optional settings: `ANTHROPIC_MODEL` (default `claude-sonnet-4-5`), `PORT` (API port, default `3001`) and `DATABASE_FILE` (default `./data/postflow.db`).
-
-### 2. Set up the database
+### 2. Create the local database
 
 ```bash
 npm run db:migrate
 ```
 
-This creates `data/postflow.db` and applies every migration. The API server also runs pending migrations when it starts, so this step is safe to repeat.
+This applies the SQL files in `migrations/` to a local D1 database stored in `.wrangler/`.
 
 ### 3. Start the dev server
 
@@ -61,43 +58,42 @@ This creates `data/postflow.db` and applies every migration. The API server also
 npm run dev
 ```
 
-This starts two processes:
-
-- **Web:** http://localhost:3000 (Vite with hot reload; open this one)
-- **API:** http://localhost:3001 (Express; Vite proxies `/api/*` to it)
-
-Create an account at http://localhost:3000/signup and go through the onboarding.
+Open http://localhost:3000 and create an account. Vite serves the React app and runs the API Worker in Cloudflare's local runtime, so `/api` works from the same address.
 
 ### Other scripts
 
 | Command | What it does |
 | ------- | ------------ |
-| `npm run lint` | Type-checks the frontend and the backend |
-| `npm run build` | Builds the frontend into `dist/` |
-| `npm start` | Runs the API in production mode and serves `dist/` from the same port (needs `JWT_SECRET`) |
+| `npm run lint` | Type-checks the frontend and the Worker |
+| `npm run build` | Builds the React app and the Worker into `dist/` |
+| `npm run preview` | Builds, then serves the production build locally |
+| `npm run deploy` | Builds and deploys to Cloudflare |
+| `npm run db:migrate:remote` | Applies migrations to the production D1 database |
 
 ## Project layout
 
 ```
 server/
-  index.ts            Express app, rate limits, error handler
-  env.ts              Environment config
-  auth.ts             JWT session cookie + requireAuth middleware
-  db/                 Kysely instance, schema types, migrations
+  index.ts            Hono app for /api/*, error handling
+  env.ts              Worker bindings and secrets
+  auth.ts             Password hashing, session cookie, auth + rate-limit middleware
+  db/                 Kysely + D1 setup, batch helper, table types
   ai/                 Claude client + prompt builders
   routes/             auth, profile, voice samples/profile, inspirations, generate, drafts
+migrations/           D1 schema (SQL), applied with wrangler
 src/
   pages/              Auth, Onboarding, Dashboard, Results, Inspiration Library, Voice Profile
   components/         App shell, UI primitives, LinkedIn post card, inspiration manager
   context/            Auth + toast providers
   lib/                API client, types, constants
+wrangler.jsonc        Worker config: static assets, D1 binding, rate limits
 ```
 
 ## API
 
 | Method | Path | Notes |
 | ------ | ---- | ----- |
-| POST | `/api/auth/signup`, `/api/auth/login`, `/api/auth/logout` | Sets or clears the session cookie |
+| POST | `/api/auth/signup`, `/api/auth/login`, `/api/auth/logout` | Sets or clears the session cookie. Signup and login are limited to 10 per minute per IP |
 | GET | `/api/auth/me` | Current user |
 | GET/PUT | `/api/profile` | Name, role, industry, content pillars, onboarding flag |
 | GET/POST | `/api/voice-samples` | Up to 5 samples |
@@ -108,7 +104,7 @@ src/
 | PUT/DELETE | `/api/inspirations/:id` | PUT replaces the name and all samples |
 | GET/POST | `/api/inspirations/:id/samples` | Up to 3 samples per creator |
 | DELETE | `/api/inspirations/:id/samples/:sampleId` | |
-| POST | `/api/generate` | `{ one_liner, selected_modes?, regenerate_single_mode?, inspiration_id?, replace_draft_id? }` |
+| POST | `/api/generate` | `{ one_liner, selected_modes?, regenerate_single_mode?, inspiration_id?, replace_draft_id? }`. AI calls are limited to 10 per minute per user |
 | PATCH | `/api/drafts/:id/status` | `{ status: "copied" \| "discarded", post_text? }` |
 | PATCH | `/api/drafts/:id` | Saves an edited `post_text` |
 | POST | `/api/drafts/discard` | Bulk-discards uncopied drafts when you leave the results screen |
@@ -121,56 +117,48 @@ src/
 - Claude must return JSON. The server parses and validates it, and retries once if the JSON is malformed. Each variant is saved as a `drafts` row with status `generated`. Suggested hashtags are appended to the post text.
 - **Copy Text** marks a draft `copied`. **Regenerate** marks the old version `discarded`. When you leave the results screen, any draft you didn't copy is marked `discarded`. A copied draft is never downgraded.
 
-## Deploying with your own domain
+## Deploying to Cloudflare
 
-PostFlow runs as one Node.js server that serves both the API and the built frontend. Because the database is a SQLite file, the host must provide **permanent disk storage**. Serverless hosts like Vercel and Netlify don't keep files between runs, so they are not a good fit. The steps below use [Render](https://render.com); Railway works the same way with a "Volume" in place of a Disk.
+Everything runs on one Cloudflare Worker: it serves the React build and handles `/api/*`, with D1 as the database. Deploying needs a free Cloudflare account. The **Workers Paid plan ($5/month) is recommended**: the free plan allows only 10 ms of CPU per request, which signups (password hashing) can exceed.
 
-### 1. Create the web service
+### 1. Log in and create the database
 
-1. Sign in to Render with GitHub and click **New → Web Service**.
-2. Choose the `gg` repository and the branch to deploy (usually `main`).
-3. Fill in:
-   - **Runtime:** Node
-   - **Build command:** `npm ci --include=dev && npm run build`
-   - **Start command:** `npm start`
-4. Choose a paid instance type. The free tier has no permanent disk, so the database would be erased on every restart.
+```bash
+npx wrangler login
+npx wrangler d1 create postflow
+```
 
-### 2. Add a disk for the database
+The second command prints a `database_id`. Paste it into `wrangler.jsonc`, replacing the `00000000-...` placeholder under `d1_databases`, and commit that change.
 
-In the service's **Disks** section, add a disk:
+### 2. Create the tables
 
-- **Mount path:** `/var/data`
-- **Size:** 1 GB is plenty to start
+```bash
+npm run db:migrate:remote
+```
 
-### 3. Set environment variables
+### 3. Set the secrets
 
-Under **Environment**, add:
+```bash
+npx wrangler secret put ANTHROPIC_API_KEY
+npx wrangler secret put JWT_SECRET
+```
 
-| Key | Value |
-| --- | ----- |
-| `ANTHROPIC_API_KEY` | your Anthropic API key |
-| `JWT_SECRET` | a long random string (see [Create your `.env` file](#1-create-your-env-file)) |
-| `DATABASE_FILE` | `/var/data/postflow.db` |
+Each command asks you to paste the value. Use a different `JWT_SECRET` from your local one.
 
-Don't set `NODE_ENV`: `npm start` sets it to `production` itself, and setting it during the build would skip the build tools. Render provides `PORT` automatically.
+### 4. Deploy
 
-Click **Deploy**. When the log shows `API listening`, the app is live at an address like `https://postflow.onrender.com`. The database tables are created on first start.
+```bash
+npm run deploy
+```
 
-### 4. Connect your domain
+Wrangler prints the live address, for example `https://postflow.<your-subdomain>.workers.dev`. Open it and sign up.
 
-1. Buy a domain from any registrar (for example Cloudflare or Namecheap).
-2. In Render, open the service's **Settings → Custom Domains** and add your domain, for example `app.yourdomain.com`.
-3. At your registrar, add the DNS record Render shows you. For a subdomain this is a **CNAME** pointing to your `onrender.com` address. For a bare domain (`yourdomain.com`), follow Render's instructions for an `A` or `ALIAS` record.
-4. Wait for DNS to update (minutes to a few hours). Render then issues an HTTPS certificate automatically.
+To redeploy after changes, run `npm run deploy` again. When you add a new file to `migrations/`, run `npm run db:migrate:remote` before deploying.
 
-### Updating
+**Optional: deploy on every push.** In the Cloudflare dashboard, open **Workers & Pages → postflow → Settings → Build** and connect the GitHub repository. Set the build command to `npm run build` and the deploy command to `npx wrangler deploy`.
 
-Every push to the deployed branch triggers a new deploy. Data in `/var/data` is kept between deploys.
+### Adding your own domain later
 
-## Moving to Postgres later
-
-The queries and migrations only use portable column types and string UUID primary keys. To switch:
-
-1. `npm install pg`.
-2. In `server/db/index.ts`, replace `SqliteDialect` with `PostgresDialect({ pool: new Pool({ connectionString: process.env.DATABASE_URL }) })`.
-3. Run `npm run db:migrate` against the new database.
+1. Buy a domain. Buying it from **Cloudflare Registrar** (dashboard → **Domain Registration**) is simplest because its DNS is already on Cloudflare. A domain from another registrar works too, once you add it to Cloudflare and switch its nameservers.
+2. In the dashboard, open **Workers & Pages → postflow → Settings → Domains & Routes → Add → Custom domain**, and enter e.g. `app.yourdomain.com` or `yourdomain.com`.
+3. Cloudflare creates the DNS record and HTTPS certificate automatically. Nothing in the code needs to change.

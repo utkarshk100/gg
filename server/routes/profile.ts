@@ -1,13 +1,16 @@
-import { Router } from 'express';
+import { Hono } from 'hono';
+import type { Kysely } from 'kysely';
 import { z } from 'zod';
-import { db, newId } from '../db/index.ts';
-import { requireAuth, uid } from '../auth.ts';
-import { asyncHandler, HttpError, parseBody } from '../lib/http.ts';
+import { newId, runBatch } from '../db/index.ts';
+import type { Database } from '../db/schema.ts';
+import type { AppEnv } from '../env.ts';
+import { requireAuth } from '../auth.ts';
+import { HttpError, parseBody } from '../lib/http.ts';
 
-export const profileRouter = Router();
+export const profileRouter = new Hono<AppEnv>();
 profileRouter.use(requireAuth);
 
-export async function loadProfile(userId: string) {
+export async function loadProfile(db: Kysely<Database>, userId: string) {
   const user = await db
     .selectFrom('users')
     .select(['id', 'email', 'name', 'role', 'industry', 'onboarding_completed', 'created_at'])
@@ -49,43 +52,37 @@ const profileUpdate = z.object({
   onboarding_completed: z.boolean().optional(),
 });
 
-profileRouter.get(
-  '/',
-  asyncHandler(async (req, res) => {
-    const profile = await loadProfile(uid(req));
-    if (!profile) throw new HttpError(404, 'User not found');
-    res.json({ user: profile });
-  }),
-);
+profileRouter.get('/', async (c) => {
+  const profile = await loadProfile(c.get('db'), c.get('userId'));
+  if (!profile) throw new HttpError(404, 'User not found');
+  return c.json({ user: profile });
+});
 
-profileRouter.put(
-  '/',
-  asyncHandler(async (req, res) => {
-    const userId = uid(req);
-    const body = parseBody(profileUpdate, req.body);
+profileRouter.put('/', async (c) => {
+  const db = c.get('db');
+  const userId = c.get('userId');
+  const body = await parseBody(c, profileUpdate);
 
-    await db.transaction().execute(async (trx) => {
-      const updates: Record<string, unknown> = {};
-      for (const key of ['name', 'role', 'industry'] as const) {
-        if (body[key] !== undefined) updates[key] = body[key];
-      }
-      if (body.onboarding_completed !== undefined) updates.onboarding_completed = body.onboarding_completed ? 1 : 0;
-      if (Object.keys(updates).length) {
-        await trx.updateTable('users').set(updates).where('id', '=', userId).execute();
-      }
+  const updates: Record<string, string | number | null> = {};
+  for (const key of ['name', 'role', 'industry'] as const) {
+    if (body[key] !== undefined) updates[key] = body[key];
+  }
+  if (body.onboarding_completed !== undefined) updates.onboarding_completed = body.onboarding_completed ? 1 : 0;
 
-      if (body.content_pillars) {
-        const unique = [...new Map(body.content_pillars.map((t) => [t.toLowerCase(), t])).values()];
-        await trx.deleteFrom('content_pillars').where('user_id', '=', userId).execute();
-        if (unique.length) {
-          await trx
-            .insertInto('content_pillars')
-            .values(unique.map((topic) => ({ id: newId(), user_id: userId, topic })))
-            .execute();
-        }
-      }
-    });
+  const queries = [];
+  if (Object.keys(updates).length) {
+    queries.push(db.updateTable('users').set(updates).where('id', '=', userId));
+  }
+  if (body.content_pillars) {
+    const unique = [...new Map(body.content_pillars.map((t) => [t.toLowerCase(), t])).values()];
+    queries.push(db.deleteFrom('content_pillars').where('user_id', '=', userId));
+    if (unique.length) {
+      queries.push(
+        db.insertInto('content_pillars').values(unique.map((topic) => ({ id: newId(), user_id: userId, topic }))),
+      );
+    }
+  }
+  await runBatch(c.env.DB, queries);
 
-    res.json({ user: await loadProfile(userId) });
-  }),
-);
+  return c.json({ user: await loadProfile(db, userId) });
+});

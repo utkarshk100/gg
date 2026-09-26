@@ -1,16 +1,17 @@
-import { Router } from 'express';
+import { Hono } from 'hono';
 import { z } from 'zod';
-import { db, newId, nowIso } from '../db/index.ts';
+import { newId, nowIso, runBatch } from '../db/index.ts';
 import type { StyleMode } from '../db/schema.ts';
-import { requireAuth, uid } from '../auth.ts';
-import { asyncHandler, HttpError, parseBody } from '../lib/http.ts';
+import type { AppEnv, Env } from '../env.ts';
+import { rateLimit, requireAuth } from '../auth.ts';
+import { HttpError, parseBody } from '../lib/http.ts';
 import { completeText, extractJson } from '../ai/client.ts';
 import { buildGenerationPrompt, GENERATION_SYSTEM_PROMPT, STYLE_MODES } from '../ai/prompts.ts';
 import { getCachedTraits } from './voice.ts';
 import { listInspirations } from './inspirations.ts';
 import { serializeDraft } from './drafts.ts';
 
-export const generateRouter = Router();
+export const generateRouter = new Hono<AppEnv>();
 generateRouter.use(requireAuth);
 
 const styleMode = z.enum(STYLE_MODES as [StyleMode, ...StyleMode[]]);
@@ -42,11 +43,11 @@ function withHashtags(postText: string, hashtags: string[]) {
   return missing.length ? `${text}\n\n${missing.join(' ')}` : text;
 }
 
-async function requestVariants(prompt: string, modes: StyleMode[]): Promise<Map<StyleMode, Variant>> {
+async function requestVariants(env: Env, prompt: string, modes: StyleMode[]): Promise<Map<StyleMode, Variant>> {
   let lastError: unknown;
   // One retry if the model returns malformed or incomplete JSON.
   for (let attempt = 0; attempt < 2; attempt++) {
-    const text = await completeText({ system: GENERATION_SYSTEM_PROMPT, user: prompt, maxTokens: 6000 });
+    const text = await completeText(env, { system: GENERATION_SYSTEM_PROMPT, user: prompt, maxTokens: 6000 });
     try {
       const { variants } = responseSchema.parse(extractJson(text));
       const byMode = new Map<StyleMode, Variant>();
@@ -71,9 +72,11 @@ async function requestVariants(prompt: string, modes: StyleMode[]): Promise<Map<
 
 generateRouter.post(
   '/',
-  asyncHandler(async (req, res) => {
-    const userId = uid(req);
-    const body = parseBody(generateBody, req.body);
+  rateLimit('AI_LIMITER', 'You are generating very quickly. Take a breath and try again in a minute.'),
+  async (c) => {
+    const db = c.get('db');
+    const userId = c.get('userId');
+    const body = await parseBody(c, generateBody);
 
     const modes: StyleMode[] = body.regenerate_single_mode
       ? [body.regenerate_single_mode]
@@ -83,8 +86,8 @@ generateRouter.post(
       db.selectFrom('users').select(['name', 'role', 'industry']).where('id', '=', userId).executeTakeFirstOrThrow(),
       db.selectFrom('content_pillars').select('topic').where('user_id', '=', userId).execute(),
       db.selectFrom('voice_samples').select('sample_text').where('user_id', '=', userId).orderBy('created_at').execute(),
-      getCachedTraits(userId),
-      body.inspiration_id ? listInspirations(userId) : Promise.resolve([]),
+      getCachedTraits(db, userId),
+      body.inspiration_id ? listInspirations(db, userId) : Promise.resolve([]),
     ]);
 
     let inspiration = null;
@@ -104,7 +107,7 @@ generateRouter.post(
       inspiration,
     });
 
-    const variants = await requestVariants(prompt, modes);
+    const variants = await requestVariants(c.env, prompt, modes);
 
     const createdAt = nowIso();
     const rows = modes.map((mode) => {
@@ -123,19 +126,20 @@ generateRouter.post(
       };
     });
 
-    await db.transaction().execute(async (trx) => {
-      await trx.insertInto('drafts').values(rows).execute();
-      if (body.replace_draft_id) {
-        await trx
-          .updateTable('drafts')
-          .set({ status: 'discarded' })
-          .where('id', '=', body.replace_draft_id)
-          .where('user_id', '=', userId)
-          .where('status', '=', 'generated')
-          .execute();
-      }
-    });
+    await runBatch(c.env.DB, [
+      db.insertInto('drafts').values(rows),
+      ...(body.replace_draft_id
+        ? [
+            db
+              .updateTable('drafts')
+              .set({ status: 'discarded' })
+              .where('id', '=', body.replace_draft_id)
+              .where('user_id', '=', userId)
+              .where('status', '=', 'generated'),
+          ]
+        : []),
+    ]);
 
-    res.json({ variants: rows.map(serializeDraft) });
-  }),
+    return c.json({ variants: rows.map(serializeDraft) });
+  },
 );
