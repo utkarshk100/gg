@@ -1,156 +1,56 @@
 @import "tailwindcss";
 
 @theme {
-  --color-surface: #faf8ff;
-  --color-surface-dim: #d2d9f4;
-  --color-surface-bright: #faf8ff;
-  --color-surface-container-lowest: #ffffff;
-  --color-surface-container-low: #f2f3ff;
-  --color-surface-container: #eaedff;
-  --color-surface-container-high: #e2e7ff;
-  --color-surface-container-highest: #dae2fd;
-  --color-on-surface: #131b2e;
-  --color-on-surface-variant: #414752;
-  --color-inverse-surface: #283044;
-  --color-inverse-on-surface: #eef0ff;
-  --color-outline: #727783;
-  --color-outline-variant: #c1c6d4;
-  --color-surface-tint: #005eb5;
-  --color-primary: #004e99;
-  --color-on-primary: #ffffff;
-  --color-primary-container: #0a66c2;
-  --color-on-primary-container: #dbe6ff;
-  --color-inverse-primary: #a8c8ff;
-  --color-secondary: #4648d4;
-  --color-on-secondary: #ffffff;
-  --color-secondary-container: #6063ee;
-  --color-on-secondary-container: #fffbff;
-  --color-tertiary: #005766;
-  --color-on-tertiary: #ffffff;
-  --color-tertiary-container: #007184;
-  --color-on-tertiary-container: #b7efff;
-  --color-error: #ba1a1a;
-  --color-on-error: #ffffff;
-  --color-error-container: #ffdad6;
-  --color-on-error-container: #93000a;
-  --color-primary-fixed: #d6e3ff;
-  --color-primary-fixed-dim: #a8c8ff;
-  --color-on-primary-fixed: #001b3d;
-  --color-on-primary-fixed-variant: #00468a;
-  --color-secondary-fixed: #e1e0ff;
-  --color-secondary-fixed-dim: #c0c1ff;
-  --color-on-secondary-fixed: #07006c;
-  --color-on-secondary-fixed-variant: #2f2ebe;
-  --color-tertiary-fixed: #acedff;
-  --color-tertiary-fixed-dim: #4cd7f6;
-  --color-on-tertiary-fixed: #001f26;
-  --color-on-tertiary-fixed-variant: #004e5c;
-  --color-background: #faf8ff;
-  --color-on-background: #131b2e;
-  --color-surface-variant: #dae2fd;
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
 
-  --font-display-lg: "Plus Jakarta Sans", sans-serif;
-  --font-display-sm: "Plus Jakarta Sans", sans-serif;
-  --font-headline-xl: "Plus Jakarta Sans", sans-serif;
-  --font-headline-lg: "Plus Jakarta Sans", sans-serif;
-  --font-headline-sm: "Plus Jakarta Sans", sans-serif;
-  --font-body-lg: "Inter", sans-serif;
-  --font-body-md: "Inter", sans-serif;
-  --font-body-sm: "Inter", sans-serif;
-  --font-label-md: "Inter", sans-serif;
-  --font-label-sm: "Inter", sans-serif;
-  --font-mono-code: "Inter", monospace;
+  --color-canvas: #f6f5f1;
+  --color-surface: #ffffff;
+  --color-ink: #1b1f24;
+  --color-muted: #5f6670;
+  --color-subtle: #8a9099;
+  --color-line: #e6e3dc;
 
-  --spacing-space-xs: 0.25rem;
-  --spacing-space-sm: 0.5rem;
-  --spacing-space-md: 0.75rem;
-  --spacing-space-lg: 1.25rem;
-  --spacing-space-xl: 2rem;
-  --spacing-gutter: 1.25rem;
-  --spacing-margin: 1.5rem;
+  --color-accent-50: #eef8f8;
+  --color-accent-100: #d5eeee;
+  --color-accent-200: #aadcdd;
+  --color-accent-500: #13828f;
+  --color-accent-600: #0d6e7a;
+  --color-accent-700: #0a5863;
+  --color-accent-800: #08464f;
+
+  --shadow-card: 0 1px 2px rgb(27 31 36 / 0.04), 0 4px 16px rgb(27 31 36 / 0.05);
+  --shadow-lift: 0 2px 4px rgb(27 31 36 / 0.05), 0 12px 32px rgb(27 31 36 / 0.09);
 }
 
-@layer utilities {
-  .font-display-lg {
-    font-family: var(--font-display-lg);
-    font-size: 48px;
-    line-height: 56px;
-    letter-spacing: -0.03em;
-    font-weight: 700;
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
   }
-  .font-display-sm {
-    font-family: var(--font-display-sm);
-    font-size: 36px;
-    line-height: 44px;
-    letter-spacing: -0.025em;
-    font-weight: 700;
+  body {
+    @apply bg-canvas text-ink font-sans antialiased;
   }
-  .font-headline-xl {
-    font-family: var(--font-headline-xl);
-    font-size: 28px;
-    line-height: 36px;
-    letter-spacing: -0.02em;
-    font-weight: 600;
+  ::selection {
+    @apply bg-accent-100;
   }
-  .font-headline-lg {
-    font-family: var(--font-headline-lg);
-    font-size: 20px;
-    line-height: 28px;
-    letter-spacing: -0.015em;
-    font-weight: 600;
-  }
-  .font-headline-sm {
-    font-family: var(--font-headline-sm);
-    font-size: 16px;
-    line-height: 24px;
-    letter-spacing: -0.01em;
-    font-weight: 600;
-  }
-  .font-body-lg {
-    font-family: var(--font-body-lg);
-    font-size: 16px;
-    line-height: 26px;
-    letter-spacing: -0.01em;
-  }
-  .font-body-md {
-    font-family: var(--font-body-md);
-    font-size: 14px;
-    line-height: 22px;
-    letter-spacing: -0.005em;
-  }
-  .font-body-sm {
-    font-family: var(--font-body-sm);
-    font-size: 13px;
-    line-height: 18px;
-  }
-  .font-label-md {
-    font-family: var(--font-label-md);
-    font-size: 12px;
-    line-height: 16px;
-    letter-spacing: 0.02em;
-    font-weight: 600;
-  }
-  .font-label-sm {
-    font-family: var(--font-label-sm);
-    font-size: 11px;
-    line-height: 14px;
-    letter-spacing: 0.03em;
-    font-weight: 500;
-  }
-  .font-mono-code {
-    font-family: var(--font-mono-code);
-    font-size: 12px;
-    line-height: 16px;
-    font-weight: 500;
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-accent-500;
   }
 }
 
-html {
-  scroll-behavior: smooth;
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.animate-toast-in {
+  animation: toast-in 180ms ease-out;
 }
 
-body {
-  background-color: var(--color-surface);
-  color: var(--color-on-surface);
+@keyframes shimmer {
+  0% { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
 }
-
+.skeleton {
+  background: linear-gradient(90deg, #eeece6 0px, #f7f6f2 80px, #eeece6 160px);
+  background-size: 800px 100%;
+  animation: shimmer 1.4s linear infinite;
+}
