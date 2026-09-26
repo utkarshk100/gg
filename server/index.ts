@@ -15,6 +15,9 @@ import { draftsRouter } from './routes/drafts.ts';
 
 const app = express();
 app.disable('x-powered-by');
+// Hosts like Render and Railway put one proxy in front of the app. Trusting it
+// lets rate limits and secure cookies see the visitor's real IP and HTTPS.
+if (env.isProduction) app.set('trust proxy', 1);
 app.use(express.json({ limit: '200kb' }));
 app.use(cookieParser());
 

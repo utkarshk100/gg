@@ -48,5 +48,8 @@
     "typescript": "~5.8.2",
     "vite": "^6.2.3"
   },
-  "description": "AI-powered LinkedIn content assistant"
+  "description": "AI-powered LinkedIn content assistant",
+  "engines": {
+    "node": ">=20"
+  }
 }

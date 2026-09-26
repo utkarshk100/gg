@@ -121,6 +121,52 @@ src/
 - Claude must return JSON. The server parses and validates it, and retries once if the JSON is malformed. Each variant is saved as a `drafts` row with status `generated`. Suggested hashtags are appended to the post text.
 - **Copy Text** marks a draft `copied`. **Regenerate** marks the old version `discarded`. When you leave the results screen, any draft you didn't copy is marked `discarded`. A copied draft is never downgraded.
 
+## Deploying with your own domain
+
+PostFlow runs as one Node.js server that serves both the API and the built frontend. Because the database is a SQLite file, the host must provide **permanent disk storage**. Serverless hosts like Vercel and Netlify don't keep files between runs, so they are not a good fit. The steps below use [Render](https://render.com); Railway works the same way with a "Volume" in place of a Disk.
+
+### 1. Create the web service
+
+1. Sign in to Render with GitHub and click **New → Web Service**.
+2. Choose the `gg` repository and the branch to deploy (usually `main`).
+3. Fill in:
+   - **Runtime:** Node
+   - **Build command:** `npm ci --include=dev && npm run build`
+   - **Start command:** `npm start`
+4. Choose a paid instance type. The free tier has no permanent disk, so the database would be erased on every restart.
+
+### 2. Add a disk for the database
+
+In the service's **Disks** section, add a disk:
+
+- **Mount path:** `/var/data`
+- **Size:** 1 GB is plenty to start
+
+### 3. Set environment variables
+
+Under **Environment**, add:
+
+| Key | Value |
+| --- | ----- |
+| `ANTHROPIC_API_KEY` | your Anthropic API key |
+| `JWT_SECRET` | a long random string (see [Create your `.env` file](#1-create-your-env-file)) |
+| `DATABASE_FILE` | `/var/data/postflow.db` |
+
+Don't set `NODE_ENV`: `npm start` sets it to `production` itself, and setting it during the build would skip the build tools. Render provides `PORT` automatically.
+
+Click **Deploy**. When the log shows `API listening`, the app is live at an address like `https://postflow.onrender.com`. The database tables are created on first start.
+
+### 4. Connect your domain
+
+1. Buy a domain from any registrar (for example Cloudflare or Namecheap).
+2. In Render, open the service's **Settings → Custom Domains** and add your domain, for example `app.yourdomain.com`.
+3. At your registrar, add the DNS record Render shows you. For a subdomain this is a **CNAME** pointing to your `onrender.com` address. For a bare domain (`yourdomain.com`), follow Render's instructions for an `A` or `ALIAS` record.
+4. Wait for DNS to update (minutes to a few hours). Render then issues an HTTPS certificate automatically.
+
+### Updating
+
+Every push to the deployed branch triggers a new deploy. Data in `/var/data` is kept between deploys.
+
 ## Moving to Postgres later
 
 The queries and migrations only use portable column types and string UUID primary keys. To switch:
