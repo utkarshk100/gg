@@ -16,8 +16,7 @@
     {
       "binding": "DB",
       "database_name": "postflow",
-      // Replace with the id printed by `npx wrangler d1 create postflow`.
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "fff1a7be-9de2-4b53-a007-c39f8c795329",
       "migrations_dir": "migrations"
     }
   ],

@@ -121,20 +121,15 @@ wrangler.jsonc        Worker config: static assets, D1 binding, rate limits
 
 Everything runs on one Cloudflare Worker: it serves the React build and handles `/api/*`, with D1 as the database. Deploying needs a free Cloudflare account. The **Workers Paid plan ($5/month) is recommended**: the free plan allows only 10 ms of CPU per request, which signups (password hashing) can exceed.
 
-### 1. Log in and create the database
+### 1. Log in
 
 ```bash
 npx wrangler login
-npx wrangler d1 create postflow
 ```
 
-The second command prints a `database_id`. Paste it into `wrangler.jsonc`, replacing the `00000000-...` placeholder under `d1_databases`, and commit that change.
+### 2. Database
 
-### 2. Create the tables
-
-```bash
-npm run db:migrate:remote
-```
+The production D1 database `postflow` already exists on the account and its tables are created; its id is in `wrangler.jsonc`. To deploy to a **different** Cloudflare account instead, run `npx wrangler d1 create postflow`, put the printed `database_id` into `wrangler.jsonc`, and run `npm run db:migrate:remote`.
 
 ### 3. Set the secrets
 
